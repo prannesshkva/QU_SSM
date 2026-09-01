@@ -18,7 +18,7 @@ Official PyTorch implementation of **qu_ssm** (**QU-SSM-MoE**), an ultra-efficie
 * ⚡ **3.32x Generation Speedup**: Generates tokens at `5.55 tok/s` compared to `1.67 tok/s` for modern SOTA Transformers (SmolLM-135M).
 * 💾 **Constant O(1) Memory**: Strictly `0.19 MB` state RAM footprint (1,894x smaller than a 360 MB KV-cache at L = 8,192).
 * 🧠 **42% Lower Active Compute**: Evaluates only `78.27M active parameters` per token via Top-2 SwiGLU expert routing.
-* 🌊 **Non-Dissipative Unitary Physics**: Eliminates the monotonic exponential dissipation ($e^{-\\alpha t}$) of classical real-valued SSMs via Lie-group rotations over $\\text{SO}(2)$ with $\|R(\theta)\|_2 \equiv 1.00000$.
+* 🌊 **Non-Dissipative Unitary Physics**: Eliminates the monotonic exponential dissipation (**e^(-α·t) → 0**) of classical real-valued SSMs via Lie-group rotations over **SO(2)** with **‖R(θ)‖₂ ≡ 1.00000**.
 * 🌐 **Universal Multimodal Backbone**: Turnkey native support for Language, 16kHz Raw Audio DSP, High-Frequency Financial Ticks, and 2D Spatial Vision.
 
 ---
@@ -27,7 +27,7 @@ Official PyTorch implementation of **qu_ssm** (**QU-SSM-MoE**), an ultra-efficie
 
 | Model Architecture | Total Params | Active Params / Token | Generation Speed | Step Latency | RAM at L=8,192 |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **SmolLM-135M** (Hugging Face 2024) | 134.52M | 134.52M (Dense) | 1.67 tok/s | 597.86 ms | 360.00 MB |
+| **SmolLM-135M** (Hugging Face) | 134.52M | 134.52M (Dense) | 1.67 tok/s | 597.86 ms | 360.00 MB |
 | **Mamba-130M-HF** (Albert Gu et al.) | 129.14M | 129.14M (Dense) | 1.98 tok/s | 506.18 ms | 0.19 MB |
 | **[qu_ssm-130Moe](https://huggingface.co/Prannesshkva/QU-SSM-130M-MoE)** | **134.89M** | **78.27M (Sparse Top-2)** | **5.55 tok/s (🥇 3.32x)** | **180.16 ms** | **0.19 MB (🥇 Constant)** |
 
@@ -58,7 +58,7 @@ model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 
 prompt = "In a world governed by state space dynamics, the continuous rotation"
-input_ids = tokenizer(prompt, return_tensors=\"pt\").input_ids
+input_ids = tokenizer(prompt, return_tensors="pt").input_ids
 output = model.generate(input_ids, max_new_tokens=40)
 print(tokenizer.decode(output[0]))
 ```
@@ -67,17 +67,24 @@ print(tokenizer.decode(output[0]))
 
 ## 🔬 Mathematical Recurrence Engine
 
-The recurrent state update at step $t$ evolves as a continuous unitary rotation modulated by an independent forget gate:
+The recurrent state update at step t evolves as a continuous unitary rotation modulated by an independent forget gate:
 
-$$h_t = \\gamma_t \\cdot R(\\theta_t) \\cdot h_{t-1} + u_t$$
+```text
+h_t = γ_t · R(θ_t) · h_{t-1} + u_t
+```
 
 ### 1. Dynamic Lie-Group Phase Angle (SO(2))
-$$\\theta_t = W_\\theta \\cdot x_t + \\theta_{\\text{base}}$$
-$$R(\\theta_t) = \\begin{bmatrix} \\cos\\theta_t & -\\sin\\theta_t \\\\ \\sin\\theta_t & \\cos\\theta_t \\end{bmatrix} \\in \\text{SO}(2), \\quad \\|R(\\theta_t)\\|_2 \\equiv 1.00000$$
+```text
+θ_t = W_θ · x_t + θ_bias
+R(θ_t) ∈ SO(2) with ‖R(θ_t)‖₂ ≡ 1.00000
+```
 
 ### 2. Exact Real Dual-Component Parallel Prefix Scan
-$$S = \\text{cumsum}(\\log\\gamma_t), \\quad \\Phi = \\text{cumsum}(\\theta_t)$$
-$$h_t = e^S \\left( \\cos\\Phi \\cdot \\text{cumsum}(u_{\\text{real}}) - \\sin\\Phi \\cdot \\text{cumsum}(u_{\\text{imag}}) \\right)$$
+```text
+S = cumsum(log γ_t).clamp(min=-12.0, max=0.0)
+Φ = cumsum(θ_t)
+h_t = exp(S) · [ cos(Φ) · cumsum(u_real) - sin(Φ) · cumsum(u_imag) ]
+```
 
 ---
 
