@@ -47,7 +47,9 @@ class StaticTPUMoE(nn.Module):
         sparse_weights = torch.zeros_like(probs).scatter_(-1, topk_indices, topk_weights)
         out = torch.zeros_like(x_flat)
         for i, expert in enumerate(self.experts):
-            out = out + sparse_weights[..., i:i+1] * expert(x_flat)
+            expert_weights = sparse_weights[..., i:i+1]
+            if expert_weights.any():
+                out = out + expert_weights * expert(x_flat)
         return out.view(*orig_shape)
 
 class ExactRealQUBlock(nn.Module):
@@ -61,7 +63,7 @@ class ExactRealQUBlock(nn.Module):
         self.c_proj = nn.Linear(d_model * d_state, d_model, bias=False)
         self.gate_proj = nn.Linear(d_model, d_model, bias=False)
         self.d_val = nn.Parameter(torch.ones(d_model))
-        self.theta_bias = nn.Parameter(torch.linspace(0.01, 0.5, d_state).repeat(d_model))
+        self.theta_bias = nn.Parameter(torch.linspace(0.01, 0.5, d_model * d_state))
 
     def forward(self, x):
         B, L, D = x.shape
@@ -197,6 +199,7 @@ class VisionQUSSM(PreTrainedModel):
         self.patch_embed = nn.Conv2d(3, config.d_model, kernel_size=patch_size, stride=patch_size)
         num_patches = (img_size // patch_size) ** 2
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, config.d_model))
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
         self.backbone = QUSSMModel(config)
         self.classifier = nn.Linear(config.d_model, num_classes)
 
