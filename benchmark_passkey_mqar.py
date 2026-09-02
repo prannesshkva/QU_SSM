@@ -31,7 +31,7 @@ def load_qu_ssm():
     print("  Loading QU-SSM-130M-MoE...")
     tok = AutoTokenizer.from_pretrained(QUOSSM_MODEL_ID, trust_remote_code=True)
     mod = AutoModelForCausalLM.from_pretrained(
-        QUOSSM_MODEL_ID, trust_remote_code=True, dtype=torch.float32
+        QUOSSM_MODEL_ID, trust_remote_code=True, torch_dtype=torch.float32
     ).to(DEVICE).eval()
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
@@ -44,7 +44,7 @@ def load_mamba():
     try:
         tok = AutoTokenizer.from_pretrained(MAMBA_MODEL_ID, trust_remote_code=True)
         mod = AutoModelForCausalLM.from_pretrained(
-            MAMBA_MODEL_ID, trust_remote_code=True, dtype=torch.float32
+            MAMBA_MODEL_ID, trust_remote_code=True, torch_dtype=torch.float32
         ).to(DEVICE).eval()
         if tok.pad_token is None:
             tok.pad_token = tok.eos_token
