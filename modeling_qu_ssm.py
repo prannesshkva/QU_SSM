@@ -160,7 +160,7 @@ class QUSSMForCausalLM(PreTrainedModel, GenerationMixin):
     def set_output_embeddings(self, new_embeddings):
         self.lm_head = new_embeddings
 
-    def tie_weights(self):
+    def tie_weights(self, **kwargs):
         self.lm_head.weight = self.embed.weight
 
     def forward(self, input_ids=None, inputs_embeds=None, labels=None, **kwargs):
