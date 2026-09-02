@@ -25,9 +25,13 @@ class QUSSMConfig(PretrainedConfig):
         super().__init__(**kwargs)
 
     def __getattr__(self, key: str):
-        if key.startswith("use_"):
+        if key.startswith("use_") or key.startswith("is_"):
             return False
+        if key in ("all_tied_weights_keys", "_tied_weights_keys"):
+            return []
         raise AttributeError(f"{self.__class__.__name__} object has no attribute {key}")
 
-AutoConfig.register("qu_ssm_moe", QUSSMConfig)
-
+try:
+    AutoConfig.register("qu_ssm_moe", QUSSMConfig)
+except Exception:
+    pass
