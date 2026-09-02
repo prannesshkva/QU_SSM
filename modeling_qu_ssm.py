@@ -57,60 +57,56 @@ class ExactRealQUBlock(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.d_state = d_state
-        self.theta_proj = nn.Linear(d_model, d_model * d_state, bias=False)
+        self.norm = RMSNorm(d_model)
+        self.in_proj = nn.Linear(d_model, 2 * d_model, bias=True)
         self.gamma_proj = nn.Linear(d_model, d_model, bias=True)
-        self.u_proj = nn.Linear(d_model, d_model, bias=False)
-        self.c_proj = nn.Linear(d_model * d_state, d_model, bias=False)
-        self.gate_proj = nn.Linear(d_model, d_model, bias=False)
-        self.d_val = nn.Parameter(torch.ones(d_model))
-        self.theta_bias = nn.Parameter(torch.linspace(0.01, 0.5, d_model * d_state))
+        self.theta_proj = nn.Linear(d_model, d_model, bias=False)
+        self.theta_base = nn.Parameter(torch.linspace(0.01, 0.5, d_state).view(1, 1, 1, d_state).repeat(1, 1, d_model, 1))
+        self.C_proj = nn.Linear(d_model, d_model, bias=False)
+        self.D = nn.Parameter(torch.ones(d_model))
 
     def forward(self, x):
         B, L, D = x.shape
         N = self.d_state
-        x_norm = x
-        theta = (self.theta_proj(x_norm) + self.theta_bias).view(B, L, D, N)
-        log_g = F.logsigmoid(self.gamma_proj(x_norm)).unsqueeze(-1).expand(B, L, D, N)
-        u_val = self.u_proj(x_norm)
+        x_norm = self.norm(x)
+        u_val, gate = self.in_proj(x_norm).chunk(2, dim=-1)
         u = u_val.unsqueeze(-1).expand(B, L, D, N)
+        theta = (self.theta_proj(x_norm).unsqueeze(-1) + self.theta_base)
+        log_g = F.logsigmoid(self.gamma_proj(x_norm)).unsqueeze(-1).expand(B, L, D, N)
+        
         S = torch.cumsum(log_g, dim=1).clamp(min=-12.0, max=0.0)
         Phi = torch.cumsum(theta, dim=1)
         exp_S = torch.exp(S)
         exp_neg_S = torch.exp(-S)
         cos_Phi = torch.cos(Phi)
         sin_Phi = torch.sin(Phi)
+        
         u_scaled_real = u * exp_neg_S * cos_Phi
         u_scaled_imag = -u * exp_neg_S * sin_Phi
+        
         cum_real = torch.cumsum(u_scaled_real, dim=1)
         cum_imag = torch.cumsum(u_scaled_imag, dim=1)
         h_exact = exp_S * (cos_Phi * cum_real - sin_Phi * cum_imag)
-        h_flat = h_exact.contiguous().view(B, L, D * N)
-        y_ssm = self.c_proj(h_flat) + x * self.d_val
-        return y_ssm * F.silu(self.gate_proj(x_norm))
+        h_sum = h_exact.sum(dim=-1)
+        y_ssm = self.C_proj(h_sum) + x * self.D
+        return y_ssm * F.silu(gate)
 
-class QUSSMModel(PreTrainedModel):
-    config_class = QUSSMConfig
-
+class QUSSMBlock(nn.Module):
     def __init__(self, config: QUSSMConfig):
-        super().__init__(config)
-        self.config = config
-        self.layers = nn.ModuleList([
-            nn.ModuleDict({
-                "ssm_norm": RMSNorm(config.d_model),
-                "ssm": ExactRealQUBlock(d_model=config.d_model, d_state=config.d_state),
-                "moe_norm": RMSNorm(config.d_model),
-                "moe": StaticTPUMoE(d_model=config.d_model, d_ff=config.d_ff, num_experts=config.num_experts, moe_top_k=config.moe_top_k) if config.num_experts > 1 else SwiGLUExpert(config.d_model, config.d_ff)
-            })
-            for _ in range(config.n_layers)
-        ])
-        self.final_norm = RMSNorm(config.d_model)
+        super().__init__()
+        self.ssm = ExactRealQUBlock(d_model=config.d_model, d_state=config.d_state)
+        self.mlp_norm = RMSNorm(config.d_model)
+        self.moe = StaticTPUMoE(
+            d_model=config.d_model,
+            d_ff=config.d_ff,
+            num_experts=config.num_experts,
+            moe_top_k=config.moe_top_k
+        ) if config.num_experts > 1 else SwiGLUExpert(config.d_model, config.d_ff)
 
-    def forward(self, hidden_states):
-        x = hidden_states
-        for layer in self.layers:
-            x = x + layer["ssm"](layer["ssm_norm"](x))
-            x = x + layer["moe"](layer["moe_norm"](x))
-        return self.final_norm(x)
+    def forward(self, x):
+        x = x + self.ssm(x)
+        x = x + self.moe(self.mlp_norm(x))
+        return x
 
 class QUSSMForCausalLM(PreTrainedModel, GenerationMixin):
     config_class = QUSSMConfig
@@ -118,16 +114,17 @@ class QUSSMForCausalLM(PreTrainedModel, GenerationMixin):
     def __init__(self, config: QUSSMConfig):
         super().__init__(config)
         self.config = config
-        self.embedding = nn.Embedding(config.vocab_size, config.d_model)
-        self.backbone = QUSSMModel(config)
+        self.embed = nn.Embedding(config.vocab_size, config.d_model)
+        self.layers = nn.ModuleList([QUSSMBlock(config) for _ in range(config.n_layers)])
+        self.final_norm = RMSNorm(config.d_model)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
-        self.lm_head.weight = self.embedding.weight
+        self.lm_head.weight = self.embed.weight
 
     def get_input_embeddings(self):
-        return self.embedding
+        return self.embed
 
     def set_input_embeddings(self, value):
-        self.embedding = value
+        self.embed = value
 
     def get_output_embeddings(self):
         return self.lm_head
@@ -137,8 +134,11 @@ class QUSSMForCausalLM(PreTrainedModel, GenerationMixin):
 
     def forward(self, input_ids=None, inputs_embeds=None, labels=None, **kwargs):
         if inputs_embeds is None:
-            inputs_embeds = self.embedding(input_ids)
-        x = self.backbone(inputs_embeds)
+            inputs_embeds = self.embed(input_ids)
+        x = inputs_embeds
+        for layer in self.layers:
+            x = layer(x)
+        x = self.final_norm(x)
         logits = self.lm_head(x)
         loss = None
         if labels is not None:
@@ -157,14 +157,17 @@ class QUSSMForAudio(PreTrainedModel):
         super().__init__(config)
         self.config = config
         self.patch_embed = nn.Conv1d(1, config.d_model, kernel_size=patch_size, stride=patch_size)
-        self.backbone = QUSSMModel(config)
+        self.layers = nn.ModuleList([QUSSMBlock(config) for _ in range(config.n_layers)])
+        self.final_norm = RMSNorm(config.d_model)
         self.classifier = nn.Linear(config.d_model, num_classes)
 
     def forward(self, input_values, labels=None):
         if input_values.dim() == 2:
             input_values = input_values.unsqueeze(1)
         x = self.patch_embed(input_values).transpose(1, 2)
-        h = self.backbone(x)
+        for layer in self.layers:
+            x = layer(x)
+        h = self.final_norm(x)
         logits = self.classifier(h.mean(dim=1))
         loss = None
         if labels is not None:
@@ -178,12 +181,15 @@ class QUSSMForSensorTelemetry(PreTrainedModel):
         super().__init__(config)
         self.config = config
         self.in_proj = nn.Linear(input_dim, config.d_model)
-        self.backbone = QUSSMModel(config)
+        self.layers = nn.ModuleList([QUSSMBlock(config) for _ in range(config.n_layers)])
+        self.final_norm = RMSNorm(config.d_model)
         self.out_proj = nn.Linear(config.d_model, output_dim)
 
     def forward(self, input_telemetry, labels=None):
         x = self.in_proj(input_telemetry)
-        h = self.backbone(x)
+        for layer in self.layers:
+            x = layer(x)
+        h = self.final_norm(x)
         predictions = self.out_proj(h)
         loss = None
         if labels is not None:
@@ -200,14 +206,17 @@ class VisionQUSSM(PreTrainedModel):
         num_patches = (img_size // patch_size) ** 2
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, config.d_model))
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
-        self.backbone = QUSSMModel(config)
+        self.layers = nn.ModuleList([QUSSMBlock(config) for _ in range(config.n_layers)])
+        self.final_norm = RMSNorm(config.d_model)
         self.classifier = nn.Linear(config.d_model, num_classes)
 
     def forward(self, pixel_values, labels=None):
         B = pixel_values.shape[0]
         x = self.patch_embed(pixel_values).flatten(2).transpose(1, 2)
         x = x + self.pos_embed
-        h = self.backbone(x)
+        for layer in self.layers:
+            x = layer(x)
+        h = self.final_norm(x)
         logits = self.classifier(h.mean(dim=1))
         loss = None
         if labels is not None:
