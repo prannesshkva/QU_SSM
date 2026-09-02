@@ -30,8 +30,10 @@ class QUSSMConfig(PretrainedConfig):
         super().__init__(**kwargs)
 
     def __getattr__(self, key: str):
-        if key.startswith("use_"):
+        if key.startswith("use_") or key.startswith("is_"):
             return False
+        if key in ("all_tied_weights_keys", "_tied_weights_keys"):
+            return []
         raise AttributeError(f"{self.__class__.__name__} object has no attribute {key}")
 
 try:
@@ -140,6 +142,9 @@ class QUSSMBlock(nn.Module):
 
 class QUSSMForCausalLM(PreTrainedModel, GenerationMixin):
     config_class = QUSSMConfig
+    _tied_weights_keys = ["lm_head.weight"]
+    all_tied_weights_keys = ["lm_head.weight"]
+    _no_split_modules = ["QUSSMBlock"]
 
     def __init__(self, config: QUSSMConfig):
         super().__init__(config)
@@ -162,6 +167,9 @@ class QUSSMForCausalLM(PreTrainedModel, GenerationMixin):
     def set_output_embeddings(self, new_embeddings):
         self.lm_head = new_embeddings
 
+    def tie_weights(self):
+        self.lm_head.weight = self.embed.weight
+
     def forward(self, input_ids=None, inputs_embeds=None, labels=None, **kwargs):
         if inputs_embeds is None:
             inputs_embeds = self.embed(input_ids)
@@ -182,6 +190,8 @@ class QUSSMForCausalLM(PreTrainedModel, GenerationMixin):
 
 class QUSSMForAudio(PreTrainedModel):
     config_class = QUSSMConfig
+    _tied_weights_keys = []
+    all_tied_weights_keys = []
 
     def __init__(self, config: QUSSMConfig, num_classes: int = 10, patch_size: int = 16):
         super().__init__(config)
@@ -206,6 +216,8 @@ class QUSSMForAudio(PreTrainedModel):
 
 class QUSSMForSensorTelemetry(PreTrainedModel):
     config_class = QUSSMConfig
+    _tied_weights_keys = []
+    all_tied_weights_keys = []
 
     def __init__(self, config: QUSSMConfig, input_dim: int = 1, output_dim: int = 1):
         super().__init__(config)
@@ -228,6 +240,8 @@ class QUSSMForSensorTelemetry(PreTrainedModel):
 
 class VisionQUSSM(PreTrainedModel):
     config_class = QUSSMConfig
+    _tied_weights_keys = []
+    all_tied_weights_keys = []
 
     def __init__(self, config: QUSSMConfig, img_size: int = 224, patch_size: int = 16, num_classes: int = 1000):
         super().__init__(config)
