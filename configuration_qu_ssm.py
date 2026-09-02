@@ -1,6 +1,7 @@
 from transformers.configuration_utils import PretrainedConfig
 from transformers import AutoConfig
 
+
 class QUSSMConfig(PretrainedConfig):
     model_type = "qu_ssm_moe"
 
@@ -22,7 +23,14 @@ class QUSSMConfig(PretrainedConfig):
         self.d_ff = d_ff
         self.num_experts = num_experts
         self.moe_top_k = min(moe_top_k, num_experts)
+        # Standard aliases expected by transformers internals
+        self.num_hidden_layers = n_layers
+        self.hidden_size = d_model
+        self.intermediate_size = d_ff
+        self.num_attention_heads = 1
+        self.max_position_embeddings = 131072
         super().__init__(**kwargs)
+
 
 try:
     AutoConfig.register("qu_ssm_moe", QUSSMConfig)
